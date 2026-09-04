@@ -60,6 +60,15 @@ use crate::platform::apple::l2cap::bridge_l2cap_channel;
 use crate::types::DeviceId;
 use crate::util::BroadcastEventStream;
 
+/// How long `stop_advertising` waits for CoreBluetooth to clear `isAdvertising`
+/// before giving up. Generous: it normally settles in a couple of queue turns, so
+/// this only bounds a wedged stack.
+const STOP_ADVERTISING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often `stop_advertising` re-reads `isAdvertising` while waiting.
+const STOP_ADVERTISING_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(10);
+
 fn our_props_to_cb(props: CharacteristicProperties) -> CBCharacteristicProperties {
     let mut out = CBCharacteristicProperties(0);
     if props.contains(CharacteristicProperties::BROADCAST) {
@@ -904,7 +913,30 @@ impl PeripheralBackend for ApplePeripheral {
         async move {
             debug!("stopping advertising");
             unsafe { handle.manager.stopAdvertising() };
-            Ok(())
+
+            // `stopAdvertising` is a request, not a state change: CoreBluetooth
+            // clears `isAdvertising` later, on its own dispatch queue, and offers
+            // no `peripheralManagerDidStopAdvertising:` callback to await. Returning
+            // as soon as the request is posted breaks the contract every other
+            // backend upholds -- that after `stop_advertising` resolves, a following
+            // `start_advertising` will not fail with `AlreadyAdvertising`. A caller
+            // replacing its advertisement (to change `local_name`, say) then loses
+            // the race deterministically.
+            //
+            // So poll the property until it settles. It flips within a couple of
+            // queue turns in practice; the deadline only exists so a wedged stack
+            // surfaces as `Timeout` instead of hanging.
+            let deadline = tokio::time::Instant::now() + STOP_ADVERTISING_TIMEOUT;
+            loop {
+                if !unsafe { handle.manager.isAdvertising() } {
+                    return Ok(());
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    warn!("stopAdvertising: isAdvertising still set after timeout");
+                    return Err(BlewError::Timeout);
+                }
+                tokio::time::sleep(STOP_ADVERTISING_POLL_INTERVAL).await;
+            }
         }
     }
 
