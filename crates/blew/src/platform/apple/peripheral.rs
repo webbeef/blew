@@ -77,6 +77,15 @@ fn powered_on(manager: &CBPeripheralManager) -> bool {
     state == CBManagerState::PoweredOn
 }
 
+/// How long `stop_advertising` waits for CoreBluetooth to clear `isAdvertising`
+/// before giving up. Generous: it normally settles in a couple of queue turns, so
+/// this only bounds a wedged stack.
+const STOP_ADVERTISING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often `stop_advertising` re-reads `isAdvertising` while waiting.
+const STOP_ADVERTISING_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(10);
+
 fn our_props_to_cb(props: CharacteristicProperties) -> CBCharacteristicProperties {
     let mut out = CBCharacteristicProperties(0);
     if props.contains(CharacteristicProperties::BROADCAST) {
@@ -1122,7 +1131,32 @@ impl PeripheralBackend for ApplePeripheral {
             issue_in_turn(&*handle.queue, move || unsafe {
                 h.manager.stopAdvertising();
             })
-            .await
+            .await?;
+
+            // Issuing the turn only proves the call was made. `stopAdvertising` is a
+            // request, not a state change: CoreBluetooth clears `isAdvertising` later,
+            // and offers no `peripheralManagerDidStopAdvertising:` callback to await.
+            // Returning here would break the contract every other backend upholds --
+            // that after `stop_advertising` resolves, a following `start_advertising`
+            // will not fail with `AlreadyAdvertising`. The serial queue does not save
+            // us either, because `start_advertising` reads `isAdvertising` before it
+            // enters a turn. A caller replacing its advertisement (to change
+            // `local_name`, say) then loses the race deterministically.
+            //
+            // So poll the property until it settles. It flips within a couple of
+            // queue turns in practice; the deadline only exists so a wedged stack
+            // surfaces as `Timeout` instead of hanging.
+            let deadline = tokio::time::Instant::now() + STOP_ADVERTISING_TIMEOUT;
+            loop {
+                if !unsafe { handle.manager.isAdvertising() } {
+                    return Ok(());
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    warn!("stopAdvertising: isAdvertising still set after timeout");
+                    return Err(BlewError::Timeout);
+                }
+                tokio::time::sleep(STOP_ADVERTISING_POLL_INTERVAL).await;
+            }
         }
     }
 
