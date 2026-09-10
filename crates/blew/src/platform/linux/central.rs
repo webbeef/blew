@@ -48,6 +48,36 @@ struct CentralInner {
 
 pub struct LinuxCentral(Arc<CentralInner>);
 
+/// Establish an LE connection to `device`, rather than letting BlueZ choose.
+///
+/// `Device.Connect()` prefers BR/EDR for a dual-mode peer, which fails without a
+/// classic bond and raises a Classic pairing prompt on the peer. `ConnectDevice`
+/// names the address type, so LE is chosen explicitly.
+async fn connect_le(
+    adapter: &bluer::Adapter,
+    device: &bluer::Device,
+    addr: bluer::Address,
+) -> bluer::Result<()> {
+    // Never pass `BrEdr`: `connect_device` omits the address type for it, which hands
+    // the bearer choice straight back to BlueZ. A peer BlueZ only knows classically
+    // is still reachable over LE at the same public address.
+    let address_type = match device.address_type().await {
+        Ok(bluer::AddressType::LeRandom) => bluer::AddressType::LeRandom,
+        _ => bluer::AddressType::LePublic,
+    };
+    match adapter.connect_device(addr, address_type).await {
+        Ok(_device) => Ok(()),
+        Err(err) => {
+            warn!(
+                ?err,
+                "ConnectDevice failed, falling back to Device.Connect; \
+                 bluetoothd may lack --experimental"
+            );
+            device.connect().await
+        }
+    }
+}
+
 async fn connect_inner(handle: Arc<CentralInner>, device_id: DeviceId) -> BlewResult<()> {
     let addr = CentralInner::parse_addr(&device_id)?;
     let device = handle
@@ -57,7 +87,7 @@ async fn connect_inner(handle: Arc<CentralInner>, device_id: DeviceId) -> BlewRe
             source: Box::new(e),
         })?;
     let timeout = *handle.connect_timeout.lock();
-    let connect_fut = device.connect();
+    let connect_fut = connect_le(&handle.adapter, &device, addr);
     let result = match timeout {
         Some(dur) => tokio::time::timeout(dur, connect_fut).await,
         None => Ok(connect_fut.await),
