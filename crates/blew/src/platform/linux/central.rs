@@ -528,6 +528,9 @@ impl CentralBackend for LinuxCentral {
             // matches any device.
             let df = bluer::DiscoveryFilter {
                 uuids: filter.services.into_iter().collect(),
+                // `Transport: auto` (the default) also discovers over BR/EDR, which
+                // this backend never uses.
+                transport: bluer::DiscoveryTransport::Le,
                 ..Default::default()
             };
             handle
