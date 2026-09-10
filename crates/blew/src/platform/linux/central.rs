@@ -370,19 +370,21 @@ impl CentralBackend for LinuxCentral {
             debug!(service_filter = ?filter.services, "starting BLE scan");
             evict_stale_cache_entries(&handle.adapter).await;
 
-            if !filter.services.is_empty() {
-                let df = bluer::DiscoveryFilter {
-                    uuids: filter.services.into_iter().collect(),
-                    ..Default::default()
-                };
-                handle
-                    .adapter
-                    .set_discovery_filter(df)
-                    .await
-                    .map_err(|e| BlewError::Central {
-                        source: Box::new(e),
-                    })?;
-            }
+            // Always set the filter, even with no service UUIDs to narrow by: the
+            // default is `Transport: auto`, which discovers over BR/EDR as well as
+            // LE while we only want to use LE.
+            let df = bluer::DiscoveryFilter {
+                uuids: filter.services.into_iter().collect(),
+                transport: bluer::DiscoveryTransport::Le,
+                ..Default::default()
+            };
+            handle
+                .adapter
+                .set_discovery_filter(df)
+                .await
+                .map_err(|e| BlewError::Central {
+                    source: Box::new(e),
+                })?;
 
             let stream =
                 handle
