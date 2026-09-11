@@ -47,14 +47,23 @@ pub struct LinuxCentral(Arc<CentralInner>);
 
 /// Establish an LE connection to `device`, rather than letting BlueZ choose.
 ///
-/// `Device.Connect()` prefers BR/EDR for a dual-mode peer, which fails without a
-/// classic bond and raises a Classic pairing prompt on the peer. `ConnectDevice`
-/// names the address type, so LE is chosen explicitly.
+/// `Device.Connect()` prefers BR/EDR for a dual-mode peer and then connects its
+/// profiles, which against a Mac means attempting Hands-Free audio: it fails without a
+/// classic bond, raises a Classic pairing prompt on the peer, and leaves `Device.Name`
+/// reporting the peer's EIR name instead of its LE local name. `ConnectDevice` names
+/// the address type, so LE is chosen explicitly.
 async fn connect_le(
     adapter: &bluer::Adapter,
     device: &bluer::Device,
     addr: bluer::Address,
 ) -> bluer::Result<()> {
+    // Already linked, most likely by an earlier BR/EDR attempt. `ConnectDevice` rejects
+    // that state with a bare `org.bluez.Failed` -- "Device is already marked as
+    // connected" in bluetoothd's log -- and there is nothing left to do.
+    if device.is_connected().await.unwrap_or(false) {
+        return Ok(());
+    }
+
     // Never pass `BrEdr`: `connect_device` omits the address type for it, which hands
     // the bearer choice straight back to BlueZ. A peer BlueZ only knows classically
     // is still reachable over LE at the same public address.
