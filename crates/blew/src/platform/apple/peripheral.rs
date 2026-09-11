@@ -66,8 +66,7 @@ use crate::util::BroadcastEventStream;
 const STOP_ADVERTISING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How often `stop_advertising` re-reads `isAdvertising` while waiting.
-const STOP_ADVERTISING_POLL_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(10);
+const STOP_ADVERTISING_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
 fn our_props_to_cb(props: CharacteristicProperties) -> CBCharacteristicProperties {
     let mut out = CBCharacteristicProperties(0);

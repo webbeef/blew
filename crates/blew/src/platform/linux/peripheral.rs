@@ -429,19 +429,16 @@ impl PeripheralBackend for LinuxPeripheral {
                 }
                 Err(e) => {
                     warn!(error = %e, "BLE 5 extended advertising unavailable, falling back to legacy");
-                    let h = match handle
+                    let h = handle
                         .adapter
                         .advertise(make_adv(None))
                         .await
-                        .map_err(|e| BlewError::Peripheral {
-                            source: Box::new(e),
-                        }) {
-                            Ok(h) => h,
-                            Err(e) => {
-                                warn!(error = %e, "Advertise failed");
-                                return Err(e);
+                        .map_err(|e| {
+                            warn!(error = %e, "legacy advertising failed too");
+                            BlewError::Peripheral {
+                                source: Box::new(e),
                             }
-                        };
+                        })?;
                     debug!("advertising started (legacy)");
                     h
                 }
