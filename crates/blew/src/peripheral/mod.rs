@@ -72,6 +72,19 @@ impl<B: PeripheralBackend> Peripheral<B> {
         self.backend.add_service(service).await
     }
 
+    /// Close the L2CAP listener opened by [`l2cap_listener`](Self::l2cap_listener).
+    /// Dropping the stream does not release the PSM; see
+    /// [`PeripheralBackend::close_l2cap_listener`].
+    pub async fn close_l2cap_listener(&self) -> BlewResult<()> {
+        self.backend.close_l2cap_listener().await
+    }
+
+    /// Drop every service registered by [`add_service`](Self::add_service).
+    /// See [`PeripheralBackend::remove_all_services`].
+    pub async fn remove_all_services(&self) -> BlewResult<()> {
+        self.backend.remove_all_services().await
+    }
+
     /// Begin advertising.
     pub async fn start_advertising(&self, config: &AdvertisingConfig) -> BlewResult<()> {
         self.backend.start_advertising(config).await

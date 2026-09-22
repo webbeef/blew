@@ -33,6 +33,24 @@ pub trait PeripheralBackend: private::Sealed + Send + Sync + 'static {
     /// Register a GATT service. Must be called before [`start_advertising`](Self::start_advertising).
     fn add_service(&self, service: &GattService) -> impl Future<Output = BlewResult<()>> + Send;
 
+    /// Close the L2CAP listener opened by [`l2cap_listener`](Self::l2cap_listener),
+    /// releasing its PSM.
+    ///
+    /// Dropping the returned stream is not enough on any backend: the listening socket
+    /// is owned elsewhere (an internal accept task on Linux, the peripheral manager on
+    /// Apple), so without this the PSM stays bound and connectable. A peer that reads a
+    /// stale PSM from a torn-down transport then dials a listener nothing will answer
+    /// on. A no-op where no listener was opened.
+    fn close_l2cap_listener(&self) -> impl Future<Output = BlewResult<()>> + Send;
+
+    /// Drop every service registered by [`add_service`](Self::add_service).
+    ///
+    /// Stopping the advertisement is not enough on every platform: CoreBluetooth keeps
+    /// the service table in the peripheral manager until it is told otherwise, so a
+    /// caller that tears down and rebuilds would publish a second copy of every
+    /// characteristic. A no-op where nothing is registered.
+    fn remove_all_services(&self) -> impl Future<Output = BlewResult<()>> + Send;
+
     /// Begin advertising. Returns [`BlewError::AlreadyAdvertising`](crate::error::BlewError::AlreadyAdvertising)
     /// if already active.
     fn start_advertising(

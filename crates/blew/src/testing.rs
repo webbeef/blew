@@ -708,6 +708,17 @@ impl PeripheralBackend for MockPeripheral {
         async { Ok(()) }
     }
 
+    fn close_l2cap_listener(&self) -> impl Future<Output = BlewResult<()>> + Send {
+        async { Ok(()) }
+    }
+
+    fn remove_all_services(&self) -> impl Future<Output = BlewResult<()>> + Send {
+        let mut link = self.link.lock();
+        link.services.clear();
+        link.char_values.clear();
+        async { Ok(()) }
+    }
+
     fn start_advertising(
         &self,
         config: &AdvertisingConfig,

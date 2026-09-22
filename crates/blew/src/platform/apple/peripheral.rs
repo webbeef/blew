@@ -214,6 +214,8 @@ struct PeripheralInner {
     /// the GCD delegate queue is never blocked by a slow accept-stream consumer.
     #[allow(clippy::type_complexity)]
     l2cap_channel_tx: Mutex<Option<mpsc::UnboundedSender<BlewResult<(DeviceId, L2capChannel)>>>>,
+    /// The published PSM, kept because `unpublishL2CAPChannel` needs it back.
+    l2cap_psm: Mutex<Option<Psm>>,
     /// Notifications CoreBluetooth refused for lack of transmit-queue space,
     /// retried in FIFO order from `peripheralManagerIsReadyToUpdateSubscribers:`.
     ///
@@ -248,6 +250,7 @@ impl PeripheralInner {
             l2cap_config: Mutex::new(crate::l2cap::L2capConfig::default()),
             l2cap_publish: Mutex::default(),
             l2cap_channel_tx: Mutex::new(None),
+            l2cap_psm: Mutex::new(None),
             pending_notifies: Mutex::new(VecDeque::new()),
             runtime: Handle::current(),
         });
@@ -1122,6 +1125,37 @@ impl PeripheralBackend for ApplePeripheral {
         }
     }
 
+    fn close_l2cap_listener(&self) -> impl Future<Output = BlewResult<()>> + Send {
+        let handle = Arc::clone(&self.0);
+        async move {
+            let psm = handle.inner.l2cap_psm.lock().take();
+            if let Some(psm) = psm {
+                debug!(psm = psm.0, "unpublishing L2CAP channel");
+                unsafe {
+                    handle
+                        .manager
+                        .unpublishL2CAPChannel(objc2_core_bluetooth::CBL2CAPPSM::from(psm.0));
+                };
+            }
+            // Stops the delegate forwarding channels to a consumer that has gone.
+            handle.inner.l2cap_channel_tx.lock().take();
+            Ok(())
+        }
+    }
+
+    fn remove_all_services(&self) -> impl Future<Output = BlewResult<()>> + Send {
+        let handle = Arc::clone(&self.0);
+        async move {
+            debug!("removing all GATT services");
+            unsafe { handle.manager.removeAllServices() };
+            // Also the inverse of `add_service`'s other half, which retains a
+            // `CBMutableCharacteristic` per characteristic here; they belong to services
+            // that no longer exist.
+            handle.inner.chars.lock().clear();
+            Ok(())
+        }
+    }
+
     fn stop_advertising(&self) -> impl Future<Output = BlewResult<()>> + Send {
         let handle = Arc::clone(&self.0);
         async move {
@@ -1242,6 +1276,7 @@ impl PeripheralBackend for ApplePeripheral {
             )
             .await?;
             debug!(psm = psm.0, "L2CAP listener ready");
+            *handle.inner.l2cap_psm.lock() = Some(psm);
             Ok((psm, UnboundedReceiverStream::new(ch_rx)))
         }
     }

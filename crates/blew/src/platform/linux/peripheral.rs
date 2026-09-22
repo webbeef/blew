@@ -60,6 +60,9 @@ struct PeripheralInner {
     state_tx: broadcast::Sender<PeripheralStateEvent>,
     l2cap_encryption: Mutex<L2capEncryption>,
     adapter_task: tokio::task::JoinHandle<()>,
+    /// The accept loop spawned by `l2cap_listener`, which owns the listening socket.
+    /// Aborting it is what closes that socket; dropping the caller's stream does not.
+    l2cap_accept: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl PeripheralInner {
@@ -69,6 +72,16 @@ impl PeripheralInner {
     fn unpublish(&self) {
         // Taken under the lock, dropped -- unregistering them -- after it.
         let taken = self.published.lock().unpublish();
+        drop(taken);
+        self.notifiers.lock().clear();
+    }
+
+    /// Hand the GATT application back to BlueZ, which deregisters it when the
+    /// handle drops, along with the notify sessions that belonged to it. The
+    /// advertisement is left up; see [`Published::take_app`].
+    fn release_application(&self) {
+        // Taken under the lock, dropped -- unregistering it -- after it.
+        let taken = self.published.lock().take_app();
         drop(taken);
         self.notifiers.lock().clear();
     }
@@ -141,11 +154,12 @@ impl LinuxPeripheral {
 
     #[allow(clippy::type_complexity)]
     fn bind_l2cap_listener(
-        encryption: L2capEncryption,
+        inner: &Arc<PeripheralInner>,
     ) -> BlewResult<(
         Psm,
         impl futures_core::Stream<Item = BlewResult<(DeviceId, L2capChannel)>> + Send + 'static,
     )> {
+        let encryption = *inner.l2cap_encryption.lock();
         debug!(%encryption, "starting L2CAP CoC listener");
         // Use the low-level Socket API so BT_SECURITY is set explicitly rather
         // than left to BlueZ's default.
@@ -175,7 +189,7 @@ impl LinuxPeripheral {
         debug!(psm = psm.0, "L2CAP listener ready");
 
         let (tx, rx) = mpsc::channel::<BlewResult<(DeviceId, L2capChannel)>>(16);
-        tokio::spawn(async move {
+        let accept = tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, addr)) => {
@@ -201,6 +215,12 @@ impl LinuxPeripheral {
                 }
             }
         });
+
+        // Replacing any previous listener's task also aborts it, so a restart cannot
+        // leave two accept loops on one adapter.
+        if let Some(previous) = inner.l2cap_accept.lock().replace(accept) {
+            previous.abort();
+        }
 
         Ok((psm, ReceiverStream::new(rx)))
     }
@@ -527,6 +547,7 @@ impl PeripheralBackend for LinuxPeripheral {
                 state_tx,
                 l2cap_encryption: Mutex::new(L2capEncryption::default()),
                 adapter_task,
+                l2cap_accept: Mutex::new(None),
             }
         })))
     }
@@ -655,6 +676,19 @@ impl PeripheralBackend for LinuxPeripheral {
         }
     }
 
+    fn remove_all_services(&self) -> impl Future<Output = BlewResult<()>> + Send {
+        let handle = Arc::clone(&self.0);
+        async move {
+            debug!("removing all GATT services");
+            // The inverse of `add_service`, which queues into `pending_services`; the
+            // next `start_advertising` is what serves that queue to BlueZ. Leaving it
+            // populated would re-publish everything on the next start.
+            handle.pending_services.lock().clear();
+            handle.release_application();
+            Ok(())
+        }
+    }
+
     fn stop_advertising(&self) -> impl Future<Output = BlewResult<()>> + Send {
         let handle = Arc::clone(&self.0);
         async move {
@@ -746,7 +780,7 @@ impl PeripheralBackend for LinuxPeripheral {
         // Nothing here awaits: binding the listener is synchronous and the
         // accept loop runs in its own task. Kept fallible in a helper so `?`
         // still reads naturally.
-        std::future::ready(Self::bind_l2cap_listener(*self.0.l2cap_encryption.lock()))
+        std::future::ready(Self::bind_l2cap_listener(&self.0))
     }
 
     fn state_events(&self) -> Self::StateEvents {
@@ -759,6 +793,20 @@ impl PeripheralBackend for LinuxPeripheral {
             .lock()
             .take()
             .map(UnboundedReceiverStream::new)
+    }
+
+    fn close_l2cap_listener(&self) -> impl Future<Output = BlewResult<()>> + Send {
+        let handle = Arc::clone(&self.0);
+        async move {
+            // The socket is owned by the accept task, which is parked in `accept()` and
+            // would otherwise only notice the consumer left on the next inbound
+            // connection. Aborting drops it, and with it the socket.
+            if let Some(task) = handle.l2cap_accept.lock().take() {
+                debug!("closing L2CAP listener");
+                task.abort();
+            }
+            Ok(())
+        }
     }
 }
 

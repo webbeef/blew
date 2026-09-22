@@ -702,6 +702,20 @@ object BlePeripheralManager {
         Log.d(TAG, "advertising stopped (request $requestId)")
     }
 
+    /** Drop every service registered by [addService]. */
+    @JvmStatic
+    fun removeAllServices() {
+        synchronized(serviceAddLock) {
+            gattServer?.clearServices()
+            // The other half of what addService wrote. notifyCharacteristic reads
+            // `characteristics`, so leaving it populated would hand out handles into a
+            // service the server no longer has.
+            characteristics.clear()
+            staticValues.clear()
+        }
+        Log.d(TAG, "all GATT services removed")
+    }
+
     /**
      * Send a value on a characteristic to a single subscribed device, as
      * whatever the device enabled in its CCCD write.

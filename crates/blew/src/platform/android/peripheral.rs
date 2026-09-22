@@ -219,6 +219,30 @@ fn stop_platform_advertising(request_id: i32) -> Result<(), jni::errors::Error> 
     })
 }
 
+fn close_platform_l2cap_server() -> Result<(), jni::errors::Error> {
+    jvm().attach_current_thread(|env| {
+        env.call_static_method(
+            peripheral_class(),
+            jni_str!("closeL2capServer"),
+            jni_sig!("()V"),
+            &[],
+        )?;
+        Ok::<_, jni::errors::Error>(())
+    })
+}
+
+fn remove_platform_services() -> Result<(), jni::errors::Error> {
+    jvm().attach_current_thread(|env| {
+        env.call_static_method(
+            peripheral_class(),
+            jni_str!("removeAllServices"),
+            jni_sig!("()V"),
+            &[],
+        )?;
+        Ok::<_, jni::errors::Error>(())
+    })
+}
+
 static STATE: Mutex<Option<PeripheralState>> = Mutex::new(None);
 
 /// Deliver the stack's advertising outcome to a waiting `start_advertising`.
@@ -620,6 +644,16 @@ impl PeripheralBackend for AndroidPeripheral {
         };
 
         stop_platform_advertising(request_id).map_err(|e| jni_err(&e))?;
+        Ok(())
+    }
+
+    async fn close_l2cap_listener(&self) -> BlewResult<()> {
+        close_platform_l2cap_server().map_err(|e| jni_err(&e))?;
+        Ok(())
+    }
+
+    async fn remove_all_services(&self) -> BlewResult<()> {
+        remove_platform_services().map_err(|e| jni_err(&e))?;
         Ok(())
     }
 

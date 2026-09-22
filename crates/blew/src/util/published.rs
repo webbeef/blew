@@ -73,6 +73,12 @@ impl<A, P> Published<A, P> {
         (self.adv.take(), self.app.take())
     }
 
+    /// Take only the GATT application, for `remove_all_services`: the advertisement
+    /// stays up so a teardown can drop the services before it stops advertising.
+    pub(crate) fn take_app(&mut self) -> Option<P> {
+        self.app.take()
+    }
+
     /// The adapter powered off: retire the generation, failing any start still
     /// waiting on BlueZ, and take both handles -- in one step; see the type.
     pub(crate) fn power_lost(&mut self) -> Taken<A, P> {
@@ -129,6 +135,19 @@ mod tests {
         let generation = slot.begin_start().expect("idle");
         slot.power_lost();
         assert_eq!(slot.store_app(generation, "app"), Err("app"));
+    }
+
+    #[test]
+    fn taking_the_app_leaves_the_advertisement_up() {
+        let mut slot = Slot::default();
+        let generation = slot.begin_start().expect("idle");
+        slot.store_app(generation, "app").unwrap();
+        slot.store_adv(generation, "adv").unwrap();
+
+        assert_eq!(slot.take_app(), Some("app"));
+        // Still advertising, so a start is still refused.
+        assert_eq!(slot.begin_start(), None);
+        assert_eq!(slot.unpublish(), (Some("adv"), None));
     }
 
     /// The review finding on #48. With the bump and the take split, a start
